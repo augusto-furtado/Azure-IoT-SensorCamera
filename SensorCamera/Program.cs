@@ -4,6 +4,13 @@ using System.Threading.Tasks;
 using Microsoft.Azure.Devices.Client;
 using System.Security.Cryptography.X509Certificates;
 using System.IO;
+using MMALSharp;
+using MMALSharp.Common;
+using MMALSharp.Components;
+using MMALSharp.Handlers;
+using MMALSharp.Ports;
+using MMALSharp.Ports.Outputs;
+using System.Threading;
 
 namespace SensorCamera
 {
@@ -23,6 +30,7 @@ namespace SensorCamera
 
         private static DeviceClient deviceClient = null;
         private static string[] config = null;
+        private static MMALCamera cam;
 
         static void Main(string[] args)
         {
@@ -69,6 +77,9 @@ namespace SensorCamera
                 // Create a handler for the direct method call
                 deviceClient.SetMethodHandlerAsync("TakePicture", TakePicture, null).Wait();
 
+                //Initiate camera (singleton pattern) - must be executed just once - Attention - while this app is running the camera can´t be used by another program
+                cam = MMALCamera.Instance;
+
                 //open device connection
                 deviceClient.OpenAsync().ConfigureAwait(false);
 
@@ -77,6 +88,9 @@ namespace SensorCamera
 
                 //close device connection
                 deviceClient.CloseAsync().ConfigureAwait(false);
+
+                // Only call when you no longer require the camera, i.e. on app shutdown.
+                cam.Cleanup();
             }
 
         }
@@ -109,7 +123,7 @@ namespace SensorCamera
                     Console.WriteLine("new path to save picture is: " + pathToSavePicture);
                 }
 
-                //TODO take picture 
+                TakePictureAndSave();
                 SendTelemetryData();
 
                 // Acknowledge the direct method call with a 200 success message.
@@ -123,6 +137,29 @@ namespace SensorCamera
                 return Task.FromResult(new MethodResponse(Encoding.UTF8.GetBytes(result), 400));
             }
 
+        }
+
+        private static void TakePictureAndSave()
+        {
+            using (var imgCaptureHandler = new ImageStreamCaptureHandler(pathToSavePicture + "/", "jpg"))
+            using (var imgEncoder = new MMALImageEncoder())
+            using (var nullSink = new MMALNullSinkComponent())
+            {
+                cam.ConfigureCameraSettings();
+
+                var portConfig = new MMALPortConfig(MMALEncoding.JPEG, MMALEncoding. I420, 90);
+
+                // Create our component pipeline.         
+                imgEncoder.ConfigureOutputPort(portConfig, imgCaptureHandler);
+
+                cam.Camera.StillPort.ConnectTo(imgEncoder);
+                cam.Camera.PreviewPort.ConnectTo(nullSink);
+
+                // Camera warm up time
+                Thread.Sleep(2000);
+                cam.ProcessAsync(cam.Camera.StillPort);
+                Thread.Sleep(2000);
+            }
         }
 
         /// <summary>
